@@ -197,7 +197,10 @@ int main(int argc, char *argv[])
   int MIN_POW = 3150;
   int MAX_POW = 3150;
   int NUM_FREQS;
-  int TIME = 100; //Seconds
+  time_t time2;
+  time_t time1;
+  time ( &time1 );
+  double delta = 10;
   TMR_uint32List value;
 
   TMR_PortValue portvalueList[4];
@@ -464,7 +467,7 @@ int main(int argc, char *argv[])
     // printf("%d = %d\n",i,freqs[i]);
   }
 
-  while (!kbhit()) {
+  while (difftime(time2,time1) < delta && !kbhit()) {
     for (int i = 0; i <= NUM_FREQS; i++){
       saved1 = false;
       saved2 = false;
@@ -751,9 +754,9 @@ int main(int argc, char *argv[])
       sqlite3_step(stmt);
       sqlite3_reset(stmt);
     }
+    time ( &time2 );
   }
   printf("Stopping...\n");
-  (void)getch();
   printf("Closing database\n");
   // sqlite3_finalize(stmt);
   tmr_sleep(500);
