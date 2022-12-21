@@ -186,25 +186,12 @@ int main(int argc, char *argv[])
   char string[100];
   TMR_String model;
 
-  bool saved1 = false;
-  bool saved2 = false;
-  
-  int pow;
-  double FREQ_STEP = 5;
-  int POW_STEP = 100;
-  int MIN_FREQ = 840000;
-  int MAX_FREQ = 928000;
-  int MIN_POW = 3150;
-  int MAX_POW = 3150;
-  int NUM_FREQS;
   time_t time2;
   time_t time1;
   time ( &time1 );
   double delta = 10;
-  TMR_uint32List value;
 
-  TMR_PortValue portvalueList[4];
-  TMR_PortValueList portvalue;
+  TMR_uint32List value;
 
   sqlite3 *db;
   sqlite3_stmt *stmt;
@@ -219,7 +206,7 @@ int main(int argc, char *argv[])
       return 1;
   }
   char *sql = "DROP TABLE IF EXISTS ToP;"
-              "CREATE TABLE ToP(epc INT, rssi INT, phase INT, freq INT, pow INT);";
+              "CREATE TABLE ToP(epc, rssi, phase, freq, pow, ant, ts, read_count, protocol) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);";
   rc = sqlite3_exec(db, sql, 0, 0, &err_msg);
   if (rc != SQLITE_OK ) {
       fprintf(stderr, "SQL error: %s\n", err_msg);
@@ -227,11 +214,6 @@ int main(int argc, char *argv[])
       sqlite3_close(db);
       return 1;
   } 
-  char *epc1 = "E200493F3185AD7126ACF6B5";
-  char *epc2 = "E200493F38187C3126BE51F0";
-  int rssi;
-  int phase;
-  int freq;
     
 #if USE_TRANSPORT_LISTENER
   TMR_TransportListenerBlock tb;
@@ -273,50 +255,6 @@ int main(int argc, char *argv[])
       {
         fprintf(stdout, "Can't parse read power: %s\n", argv[i+1]);
       }
-    }
-    else if (0 == strcmp("--epc1", argv[i]))
-    {
-      epc1 = argv[i+1];
-    }
-    else if (0 == strcmp("--epc2", argv[i]))
-    {
-      epc2 = argv[i+1];
-    }
-    else if (0 == strcmp("--freqstep", argv[i]))
-    {
-      char *freqptr1 = argv[i+1];
-      char *freqptr2;
-      FREQ_STEP = (double) strtod(freqptr1, &freqptr2);
-    }
-    else if (0 == strcmp("--powstep", argv[i]))
-    {
-      char *powptr1 = argv[i+1];
-      char *powptr2;
-      POW_STEP = strtol(powptr1, &powptr2, 0);
-    }
-    else if (0 == strcmp("--minfreq", argv[i]))
-    {
-      char *powptr1 = argv[i+1];
-      char *powptr2;
-      MIN_FREQ = strtol(powptr1, &powptr2, 0);
-    }
-    else if (0 == strcmp("--maxfreq", argv[i]))
-    {
-      char *powptr1 = argv[i+1];
-      char *powptr2;
-      MAX_FREQ = strtol(powptr1, &powptr2, 0);
-    }
-    else if (0 == strcmp("--minpow", argv[i]))
-    {
-      char *powptr1 = argv[i+1];
-      char *powptr2;
-      MIN_POW = strtol(powptr1, &powptr2, 0);
-    }
-    else if (0 == strcmp("--maxpow", argv[i]))
-    {
-      char *powptr1 = argv[i+1];
-      char *powptr2;
-      MAX_POW = strtol(powptr1, &powptr2, 0);
     }
     else
     {
@@ -462,295 +400,210 @@ int main(int argc, char *argv[])
   ret = TMR_paramSet(rp, TMR_PARAM_READ_PLAN, &plan);
   checkerr(rp, ret, 1, "setting read plan");
 
-  for (int i = 0; i <= NUM_FREQS; i++){
-    freqs[i] = MIN_FREQ + (int) i*1000*FREQ_STEP;
-    // printf("%d = %d\n",i,freqs[i]);
-  }
-
   while (difftime(time2,time1) < delta && !kbhit()) {
-    for (int i = 0; i <= NUM_FREQS; i++){
-      saved1 = false;
-      saved2 = false;
-      pow = MIN_POW;
-      value.max = 1;
-      value.len = 1;
-      value.list = &freqs[i];
-      ret = TMR_paramSet(rp, TMR_PARAM_REGION_HOPTABLE, &value);
-      checkerr(rp, ret, 1, "Setting Hoptable");
 
-      /* Get the antenna return loss value, this parameter is not the part of reader stats */
-      // portvalue.max = sizeof(portvalueList)/sizeof(portvalueList[0]);
-      // portvalue.list = portvalueList;
-      // ret = TMR_paramGet(rp, TMR_PARAM_ANTENNA_RETURNLOSS, &portvalue);
-      // checkerr(rp, ret, 1, "getting the antenna return loss");
-      // printf("Antenna Return Loss\n");
-      // for (int k = 0; k < portvalue.len && k < portvalue.max; k++)
-      // {
-      //   printf("Antenna %d | %d \n", portvalue.list[k].port, portvalue.list[k].value);
-      // }
+    if (TMR_ERROR_TAG_ID_BUFFER_FULL == ret)
+    {
+      /* In case of TAG ID Buffer Full, extract the tags present
+      * in buffer.
+      */
+    #ifndef BARE_METAL
+      fprintf(stdout, "reading tags:%s\n", TMR_strerr(rp, ret));
+    #endif /* BARE_METAL */
+    }
+    else
+    {
+      checkerr(rp, ret, 1, "reading tags");
+    }
 
-      while (pow <= MAX_POW){
-        printf("%d : %d\n", freqs[i], pow);
-        ret = TMR_paramSet(rp, TMR_PARAM_RADIO_READPOWER, &pow);
-        checkerr(rp, ret, 1, "setting read power");
-        ret = TMR_read(rp, 500, NULL);
-          
-        if (TMR_ERROR_TAG_ID_BUFFER_FULL == ret)
+    while (TMR_SUCCESS == TMR_hasMoreTags(rp))
+      {
+        TMR_TagReadData trd;
+        char idStr[128];
+      #ifndef BARE_METAL
+        char timeStr[128];
+      #endif /* BARE_METAL */
+
+        ret = TMR_getNextTag(rp, &trd); 
+        checkerr(rp, ret, 1, "fetching tag");
+
+        TMR_bytesToHex(trd.tag.epc, trd.tag.epcByteCount, idStr);
+
+      #ifndef BARE_METAL
+      TMR_getTimeStamp(rp, &trd, timeStr);
+      // printf("Tag ID: %s ", idStr);
+
+      // Enable PRINT_TAG_METADATA Flags to print Metadata value
+      #if PRINT_TAG_METADATA
+      {
+      uint16_t j = 0;
+
+      printf("\n");
+      for (j=0; (1<<j) <= TMR_TRD_METADATA_FLAG_MAX; j++)
+      {
+        if ((TMR_TRD_MetadataFlag)trd.metadataFlags & (1<<j))
         {
-          /* In case of TAG ID Buffer Full, extract the tags present
-          * in buffer.
-          */
-        #ifndef BARE_METAL
-          fprintf(stdout, "reading tags:%s\n", TMR_strerr(rp, ret));
-        #endif /* BARE_METAL */
-        }
-        else
-        {
-          checkerr(rp, ret, 1, "reading tags");
-        }
-
-        while (TMR_SUCCESS == TMR_hasMoreTags(rp))
+          switch ((TMR_TRD_MetadataFlag)trd.metadataFlags & (1<<j))
           {
-            TMR_TagReadData trd;
-            char idStr[128];
-          #ifndef BARE_METAL
-            char timeStr[128];
-          #endif /* BARE_METAL */
-
-            ret = TMR_getNextTag(rp, &trd); 
-            checkerr(rp, ret, 1, "fetching tag");
-
-            TMR_bytesToHex(trd.tag.epc, trd.tag.epcByteCount, idStr);
-
-          #ifndef BARE_METAL
-          TMR_getTimeStamp(rp, &trd, timeStr);
-          // printf("Tag ID: %s ", idStr);
-
-          // Enable PRINT_TAG_METADATA Flags to print Metadata value
-          #if PRINT_TAG_METADATA
-          {
-          uint16_t j = 0;
-
-          printf("\n");
-          for (j=0; (1<<j) <= TMR_TRD_METADATA_FLAG_MAX; j++)
-          {
-            if ((TMR_TRD_MetadataFlag)trd.metadataFlags & (1<<j))
+            case TMR_TRD_METADATA_FLAG_READCOUNT:
+              printf("Read Count: %d\n", trd.readCount);
+              break;
+            case TMR_TRD_METADATA_FLAG_ANTENNAID:
+              printf("Antenna ID: %d\n", trd.antenna);
+              break;
+            case TMR_TRD_METADATA_FLAG_TIMESTAMP:
+              printf("Timestamp: %s\n", timeStr);
+              break;
+            case TMR_TRD_METADATA_FLAG_PROTOCOL:
+              printf("Protocol: %d\n", trd.tag.protocol);
+              break;
+      #ifdef TMR_ENABLE_UHF
+            case TMR_TRD_METADATA_FLAG_RSSI:
+              printf("RSSI: %d\n", trd.rssi);
+              break;
+            case TMR_TRD_METADATA_FLAG_FREQUENCY:
+              printf("Frequency: %d\n", trd.frequency);
+              break;
+            case TMR_TRD_METADATA_FLAG_PHASE:
+              printf("Phase: %d\n", trd.phase);
+              break;
+      #endif /* TMR_ENABLE_UHF */
+            case TMR_TRD_METADATA_FLAG_DATA:
             {
-              switch ((TMR_TRD_MetadataFlag)trd.metadataFlags & (1<<j))
+              //TODO : Initialize Read Data
+              if (0 < trd.data.len)
               {
-                case TMR_TRD_METADATA_FLAG_READCOUNT:
-                  printf("Read Count: %d\n", trd.readCount);
-                  break;
-                case TMR_TRD_METADATA_FLAG_ANTENNAID:
-                  printf("Antenna ID: %d\n", trd.antenna);
-                  break;
-                case TMR_TRD_METADATA_FLAG_TIMESTAMP:
-                  printf("Timestamp: %s\n", timeStr);
-                  break;
-                case TMR_TRD_METADATA_FLAG_PROTOCOL:
-                  printf("Protocol: %d\n", trd.tag.protocol);
-                  break;
-          #ifdef TMR_ENABLE_UHF
-                case TMR_TRD_METADATA_FLAG_RSSI:
-                  printf("RSSI: %d\n", trd.rssi);
-                  break;
-                case TMR_TRD_METADATA_FLAG_FREQUENCY:
-                  printf("Frequency: %d\n", trd.frequency);
-                  break;
-                case TMR_TRD_METADATA_FLAG_PHASE:
-                  printf("Phase: %d\n", trd.phase);
-                  break;
-          #endif /* TMR_ENABLE_UHF */
-                case TMR_TRD_METADATA_FLAG_DATA:
+      #ifdef TMR_ENABLE_HF_LF
+                if (0x8000 == trd.data.len)
                 {
-                  //TODO : Initialize Read Data
-                  if (0 < trd.data.len)
-                  {
-          #ifdef TMR_ENABLE_HF_LF
-                    if (0x8000 == trd.data.len)
-                    {
-                      ret = TMR_translateErrorCode(GETU16AT(trd.data.list, 0));
-                      checkerr(rp, ret, 0, "Embedded tagOp failed:");
-                    }
-                    else
-          #endif /* TMR_ENABLE_HF_LF */
-                    {
-                      char dataStr[255];
-                      uint32_t dataLen = trd.data.len;
+                  ret = TMR_translateErrorCode(GETU16AT(trd.data.list, 0));
+                  checkerr(rp, ret, 0, "Embedded tagOp failed:");
+                }
+                else
+      #endif /* TMR_ENABLE_HF_LF */
+                {
+                  char dataStr[255];
+                  uint32_t dataLen = trd.data.len;
 
-                      //Convert data len from bits to byte(For M3e only).
-                      if (0 == strcmp("M3e", model.value))
-                      {
-                        dataLen = tm_u8s_per_bits(trd.data.len);
-                      }
+                  //Convert data len from bits to byte(For M3e only).
+                  if (0 == strcmp("M3e", model.value))
+                  {
+                    dataLen = tm_u8s_per_bits(trd.data.len);
+                  }
 
-                      TMR_bytesToHex(trd.data.list, dataLen, dataStr);
-                      printf("Data(%d): %s\n", trd.data.len, dataStr);
-                    }
-                  }
-                }
-                break;
-          #ifdef TMR_ENABLE_UHF
-                case TMR_TRD_METADATA_FLAG_GPIO_STATUS:
-                {
-                  if (rp->readerType == TMR_READER_TYPE_SERIAL)
-                  {
-                    printf("GPI status:\n");
-                    for (i = 0 ; i < trd.gpioCount ; i++)
-                    {
-                      printf("Pin %d: %s\n", trd.gpio[i].id, trd.gpio[i].bGPIStsTagRdMeta ? "High" : "Low");
-                    }
-                    printf("GPO status:\n");
-                    for (i = 0 ; i < trd.gpioCount ; i++)
-                    {
-                      printf("Pin %d: %s\n", trd.gpio[i].id, trd.gpio[i].high ? "High" : "Low");
-                    }
-                  }
-                  else
-                  {
-                    printf("GPI status:\n");
-                    for (i = 0 ; i < trd.gpioCount/2 ; i++)
-                    {
-                      printf("Pin %d: %s\n", trd.gpio[i].id, trd.gpio[i].high ? "High" : "Low");
-                    }
-                    printf("GPO status:\n");
-                    for (i = trd.gpioCount/2 ; i < trd.gpioCount ; i++)
-                    {
-                      printf("Pin %d: %s\n", trd.gpio[i].id, trd.gpio[i].high ? "High" : "Low");
-                    }
-                  }
-                }
-                break;
-                if (TMR_TAG_PROTOCOL_GEN2 == trd.tag.protocol)
-                {
-                  case TMR_TRD_METADATA_FLAG_GEN2_Q:
-                    printf("Gen2Q: %d\n", trd.u.gen2.q.u.staticQ.initialQ);
-                    break;
-                  case TMR_TRD_METADATA_FLAG_GEN2_LF:
-                  {
-                    printf("Gen2Linkfrequency: ");
-                    switch(trd.u.gen2.lf)
-                    {
-                      case TMR_GEN2_LINKFREQUENCY_250KHZ:
-                        printf("250(khz)\n");
-                        break;
-                      case TMR_GEN2_LINKFREQUENCY_320KHZ:
-                        printf("320(khz)\n");
-                        break;
-                      case TMR_GEN2_LINKFREQUENCY_640KHZ:
-                        printf("640(khz)\n"); 
-                        break;
-                      default:
-                        printf("Unknown value(%d)\n",trd.u.gen2.lf);
-                        break;
-                    }
-                    break;
-                  }
-                  case TMR_TRD_METADATA_FLAG_GEN2_TARGET:
-                  {
-                    printf("Gen2Target: ");
-                    switch(trd.u.gen2.target)
-                    {
-                      case TMR_GEN2_TARGET_A:
-                        printf("A\n");
-                        break;
-                      case TMR_GEN2_TARGET_B:
-                        printf("B\n");
-                        break;
-                      default:
-                        printf("Unknown Value(%d)\n",trd.u.gen2.target);
-                        break;
-                    }
-                    break;
-                  }
-                }
-          #endif /* TMR_ENABLE_UHF */
-          #ifdef TMR_ENABLE_HF_LF
-                case TMR_TRD_METADATA_FLAG_TAGTYPE:
-                {
-                  printf("TagType: 0x%08lx\n", trd.tagType);
-                  break;
-                }
-          #endif /* TMR_ENABLE_HF_LF */
-                default:
-                  break;
+                  TMR_bytesToHex(trd.data.list, dataLen, dataStr);
+                  printf("Data(%d): %s\n", trd.data.len, dataStr);
                 }
               }
             }
+            break;
+      #ifdef TMR_ENABLE_UHF
+            case TMR_TRD_METADATA_FLAG_GPIO_STATUS:
+            {
+              if (rp->readerType == TMR_READER_TYPE_SERIAL)
+              {
+                printf("GPI status:\n");
+                for (i = 0 ; i < trd.gpioCount ; i++)
+                {
+                  printf("Pin %d: %s\n", trd.gpio[i].id, trd.gpio[i].bGPIStsTagRdMeta ? "High" : "Low");
+                }
+                printf("GPO status:\n");
+                for (i = 0 ; i < trd.gpioCount ; i++)
+                {
+                  printf("Pin %d: %s\n", trd.gpio[i].id, trd.gpio[i].high ? "High" : "Low");
+                }
+              }
+              else
+              {
+                printf("GPI status:\n");
+                for (i = 0 ; i < trd.gpioCount/2 ; i++)
+                {
+                  printf("Pin %d: %s\n", trd.gpio[i].id, trd.gpio[i].high ? "High" : "Low");
+                }
+                printf("GPO status:\n");
+                for (i = trd.gpioCount/2 ; i < trd.gpioCount ; i++)
+                {
+                  printf("Pin %d: %s\n", trd.gpio[i].id, trd.gpio[i].high ? "High" : "Low");
+                }
+              }
+            }
+            break;
+            if (TMR_TAG_PROTOCOL_GEN2 == trd.tag.protocol)
+            {
+              case TMR_TRD_METADATA_FLAG_GEN2_Q:
+                printf("Gen2Q: %d\n", trd.u.gen2.q.u.staticQ.initialQ);
+                break;
+              case TMR_TRD_METADATA_FLAG_GEN2_LF:
+              {
+                printf("Gen2Linkfrequency: ");
+                switch(trd.u.gen2.lf)
+                {
+                  case TMR_GEN2_LINKFREQUENCY_250KHZ:
+                    printf("250(khz)\n");
+                    break;
+                  case TMR_GEN2_LINKFREQUENCY_320KHZ:
+                    printf("320(khz)\n");
+                    break;
+                  case TMR_GEN2_LINKFREQUENCY_640KHZ:
+                    printf("640(khz)\n"); 
+                    break;
+                  default:
+                    printf("Unknown value(%d)\n",trd.u.gen2.lf);
+                    break;
+                }
+                break;
+              }
+              case TMR_TRD_METADATA_FLAG_GEN2_TARGET:
+              {
+                printf("Gen2Target: ");
+                switch(trd.u.gen2.target)
+                {
+                  case TMR_GEN2_TARGET_A:
+                    printf("A\n");
+                    break;
+                  case TMR_GEN2_TARGET_B:
+                    printf("B\n");
+                    break;
+                  default:
+                    printf("Unknown Value(%d)\n",trd.u.gen2.target);
+                    break;
+                }
+                break;
+              }
+            }
+      #endif /* TMR_ENABLE_UHF */
+      #ifdef TMR_ENABLE_HF_LF
+            case TMR_TRD_METADATA_FLAG_TAGTYPE:
+            {
+              printf("TagType: 0x%08lx\n", trd.tagType);
+              break;
+            }
+      #endif /* TMR_ENABLE_HF_LF */
+            default:
+              break;
+            }
           }
-          #endif
-          // printf ("\n");
-          #endif
-          // printf("input: %s\n", epc);
-          // printf("reading: %s\n", idStr);
-          // printf("String compare = %d\n", strncmp(epc, idStr, sizeof(idStr)));
-          freq = freqs[i];
-          if ((0 == strcmp(epc1, idStr)) && (saved1 == false)){
-            saved1 = true;
-            rssi = trd.rssi;
-            phase = trd.phase;
-            printf("%s : %d - %d - %d - %d\n", epc1, rssi, phase, freq, pow);
-            if (sqlite3_prepare_v2(db, "INSERT INTO ToP(epc, rssi, phase, freq, pow) VALUES(?, ?, ?, ?, ?)", -1, &stmt, NULL)) {
-                printf("Error executing sql statement\n");
-                sqlite3_close(db);
-                exit(-1);
-            }
-            sqlite3_bind_text(stmt, 1, epc1, -1, NULL);
-            sqlite3_bind_int (stmt, 2, rssi);
-            sqlite3_bind_int (stmt, 3, phase);
-            sqlite3_bind_int (stmt, 4, freq);
-            sqlite3_bind_int (stmt, 5, pow);    
-            sqlite3_step(stmt);
-            sqlite3_reset(stmt);
-          } 
-          if ((0 == strcmp(epc2, idStr)) && (saved2 == false)){
-            saved2 = true;
-            rssi = trd.rssi;
-            phase = trd.phase;
-            printf("%s : %d - %d - %d - %d\n", epc2, rssi, phase, freq, pow);
-            if (sqlite3_prepare_v2(db, "INSERT INTO ToP(epc, rssi, phase, freq, pow) VALUES(?, ?, ?, ?, ?)", -1, &stmt, NULL)) {
-                printf("Error executing sql statement\n");
-                sqlite3_close(db);
-                exit(-1);
-            }
-            sqlite3_bind_text(stmt, 1, epc2, -1, NULL);
-            sqlite3_bind_int (stmt, 2, rssi);
-            sqlite3_bind_int (stmt, 3, phase);
-            sqlite3_bind_int (stmt, 4, freq);
-            sqlite3_bind_int (stmt, 5, pow);    
-            sqlite3_step(stmt);
-            sqlite3_reset(stmt);
-          } 
-          if ((saved1 == true) && (saved2 == true)){pow = MAX_POW;}
         }
-        pow = pow + POW_STEP;
-        tmr_sleep(500);
       }
-      if ((saved1 == false) && (saved2 == false)){
-        freq = freqs[i];
-        if (sqlite3_prepare_v2(db, "INSERT INTO ToP(epc, rssi, phase, freq, pow) VALUES(?, ?, ?, ?, ?)", -1, &stmt, NULL)) {
+      #endif
+      // printf ("\n");
+      #endif
+      
+      printf("%s : %d - %d - %d - %d - %d - %d - %d - %d\n", idStr, trd.rssi, trd.phase, trd.frequency, readpower, trd.antenna, timeStr, trd.readCount, trd.tag.protocol);
+      if (sqlite3_prepare_v2(db, "INSERT INTO ToP(epc, rssi, phase, freq, pow, ant, ts, read_count, protocol) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL)) {
           printf("Error executing sql statement\n");
           sqlite3_close(db);
           exit(-1);
-        }
-        sqlite3_bind_text(stmt, 1, epc1, -1, NULL);
-        sqlite3_bind_int (stmt, 2, -99);
-        sqlite3_bind_int (stmt, 3, 0);
-        sqlite3_bind_int (stmt, 4, freq);
-        sqlite3_bind_int (stmt, 5, 3200);    
-        sqlite3_step(stmt);
-        sqlite3_reset(stmt);
-        if (sqlite3_prepare_v2(db, "INSERT INTO ToP(epc, rssi, phase, freq, pow) VALUES(?, ?, ?, ?, ?)", -1, &stmt, NULL)) {
-          printf("Error executing sql statement\n");
-          sqlite3_close(db);
-          exit(-1);
-        }
       }
-      sqlite3_bind_text(stmt, 1, epc2, -1, NULL);
-      sqlite3_bind_int (stmt, 2, -99);
-      sqlite3_bind_int (stmt, 3, 0);
-      sqlite3_bind_int (stmt, 4, freq);
-      sqlite3_bind_int (stmt, 5, 3200);    
+      sqlite3_bind_text(stmt, 1, idStr, -1, NULL);
+      sqlite3_bind_int (stmt, 2, trd.rssi);
+      sqlite3_bind_int (stmt, 3, trd.phase);
+      sqlite3_bind_int (stmt, 4, trd.frequency);
+      sqlite3_bind_int (stmt, 5, readpower);    
+      sqlite3_bind_int (stmt, 6, trd.antenna);
+      sqlite3_bind_int (stmt, 7, timeStr);
+      sqlite3_bind_int (stmt, 8, trd.readCount);
+      sqlite3_bind_int (stmt, 9, trd.tag.protocol); 
       sqlite3_step(stmt);
       sqlite3_reset(stmt);
     }
