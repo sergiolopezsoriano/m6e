@@ -41,7 +41,7 @@ CODE = /home/sergi/ws/m6e/c/src/m6e/
 PROG4 := power_ramp
 PROG2 := read
 PROG3 := power_ramp2
-PROG1 := continuous_readings
+PROG1 := read_cont
 PROGS += $(PROG1)
 PROGS += $(PROG2)
 PROGS += $(PROG3)
@@ -83,4 +83,4 @@ $(CODE)$(PROG1).o: $(HEADERS) $(LIB) $(SQL1) $(SQL2)
 
 .PHONY: clean
 clean:
-	rm -f $(PROGS) *.o
+	rm -f $(PROG1) *.o

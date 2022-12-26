@@ -333,7 +333,7 @@ int main(int argc, char *argv[])
         checkerr(rp, TMR_ERROR_INVALID_REGION, __LINE__, "Reader doesn't support any regions");
       }
 
-      region = regions.list[22];  // OPEN REGION = 22
+      region = regions.list[TMR_REGION_OPEN];  // OPEN REGION = 22
       ret = TMR_paramSet(rp, TMR_PARAM_REGION_ID, &region);
       checkerr(rp, ret, 1, "setting region");
     }

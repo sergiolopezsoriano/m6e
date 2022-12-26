@@ -35,8 +35,10 @@
 #define usage() {errx(1, "Please provide valid reader URL, such as: reader-uri [--ant n] [--pow read_power]\n"\
                          "reader-uri : e.g., 'tmr:///COM1' or 'tmr:///dev/ttyS0/' or 'tmr://readerIP'\n"\
                          "[--ant n] : e.g., '--ant 1'\n"\
-                         "[--epc epc] : e.g., '--epc E20063993234ADF11A586EB7'\n"\
-                         "[--pow read_power] : e.g, '--pow 2300'\n"\
+                         "[--pow read_power] : e.g, '-pow 3150'\n"\
+                         "[--time reading_time] : e.g, '--time 10 (seconds)'\n"\
+                         "[--file file_name] : e.g, '--file database.db'\n"\
+                         "[--reg region] : e.g, '--reg 1 (Europe) 2 (USA)'\n"\
                          "Example for UHF modules: 'tmr:///com4' or 'tmr:///com4 --ant 1,2' or 'tmr:///com4 --ant 1,2 --pow 2300'\n"\
                          "Example for HF/LF modules: 'tmr:///com4' \n");}
 
@@ -167,15 +169,26 @@ void parseAntennaList(uint8_t *antenna, uint8_t *antennaCount, char *args)
 }
 #endif /* BARE_METAL */
 
+time_t getSeconds(struct TMR_Reader *rp, const struct TMR_TagReadData *read)
+{
+    uint8_t shift;
+    uint64_t timestamp;
+    time_t seconds;
+    shift = 32;
+    timestamp = ((uint64_t)read->timestampHigh<<shift) | read->timestampLow;
+    seconds = timestamp / 1000;
+    return seconds;
+}
+
 int main(int argc, char *argv[])
 {
-  set_conio_terminal_mode();
+  // set_conio_terminal_mode();
   TMR_Reader r, *rp;
   TMR_Status ret;
   TMR_ReadPlan plan;
   TMR_Region region;
 #define READPOWER_NULL (-12345)
-  int readpower = READPOWER_NULL;
+  int readpower = 3000; // READPOWER_NULL
 #ifndef BARE_METAL
   uint8_t i;
 #endif /* BARE_METAL*/
@@ -189,31 +202,18 @@ int main(int argc, char *argv[])
   time_t time2;
   time_t time1;
   time ( &time1 );
-  double delta = 10;
+  double delta = 5;
+  int ts = 0;
 
-  TMR_uint32List value;
+  int reg = 1;
 
   sqlite3 *db;
   sqlite3_stmt *stmt;
   char *err_msg = 0;
-  char database [15];
-  printf("Enter database file name: ");
-  scanf("%s", database);
-  int rc = sqlite3_open(database, &db);
-  if (rc != SQLITE_OK) {
-      fprintf(stderr, "Cannot open database: %s\n", sqlite3_errmsg(db));
-      sqlite3_close(db);
-      return 1;
-  }
-  char *sql = "DROP TABLE IF EXISTS ToP;"
-              "CREATE TABLE ToP(epc, rssi, phase, freq, pow, ant, ts, read_count, protocol) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);";
-  rc = sqlite3_exec(db, sql, 0, 0, &err_msg);
-  if (rc != SQLITE_OK ) {
-      fprintf(stderr, "SQL error: %s\n", err_msg);
-      sqlite3_free(err_msg);        
-      sqlite3_close(db);
-      return 1;
-  } 
+  char *database = "default.db";
+  // printf("Enter database file name: ");
+  // scanf("%s", database);
+  TMR_uint32List value;
     
 #if USE_TRANSPORT_LISTENER
   TMR_TransportListenerBlock tb;
@@ -256,14 +256,66 @@ int main(int argc, char *argv[])
         fprintf(stdout, "Can't parse read power: %s\n", argv[i+1]);
       }
     }
+    else if (0 == strcmp("--time", argv[i]))
+    {
+      long retval;
+      char *startptr;
+      char *endptr;
+      startptr = argv[i+1];
+      retval = strtol(startptr, &endptr, 0);
+      if (endptr != startptr)
+      {
+        delta = retval;
+        fprintf(stdout, "Reading time: %f s\n", delta);
+      }
+      else
+      {
+        fprintf(stdout, "Can't parse reading time: %s\n", argv[i+1]);
+      }
+    }
+    else if (0 == strcmp("--reg", argv[i]))
+    {
+      long retval;
+      char *startptr;
+      char *endptr;
+      startptr = argv[i+1];
+      retval = strtol(startptr, &endptr, 0);
+      if (endptr != startptr)
+      {
+        reg = retval;
+        fprintf(stdout, "Region: %f s\n", delta);
+      }
+      else
+      {
+        fprintf(stdout, "Can't parse region: %s\n", argv[i+1]);
+      }
+    }
+    else if (0 == strcmp("--file", argv[i]))
+    {
+      
+      database = argv[i+1];
+    }
     else
     {
       fprintf(stdout, "Argument %s is not recognized\n", argv[i]);
       usage();
     }
   }
-  NUM_FREQS = (int) (MAX_FREQ-MIN_FREQ)/FREQ_STEP/1000;
-  int freqs[NUM_FREQS];
+  int rc = sqlite3_open(database, &db);
+  if (rc != SQLITE_OK) {
+      fprintf(stderr, "Cannot open database: %s\n", sqlite3_errmsg(db));
+      sqlite3_close(db);
+      return 1;
+  }
+  char *sql = "DROP TABLE IF EXISTS ToP;"
+              "CREATE TABLE ToP(epc INT, rssi INT, phase INT, freq INT, pow INT, ant INT, ts INT, read_count INT, protocol INT);";
+  rc = sqlite3_exec(db, sql, 0, 0, &err_msg);
+  if (rc != SQLITE_OK ) {
+      fprintf(stderr, "SQL error: %s\n", err_msg);
+      sqlite3_free(err_msg);        
+      sqlite3_close(db);
+      return 1;
+  } 
   ret = TMR_create(rp, argv[1]);
   checkerr(rp, ret, 1, "creating reader");
 #else
@@ -320,7 +372,7 @@ int main(int argc, char *argv[])
         checkerr(rp, TMR_ERROR_INVALID_REGION, __LINE__, "Reader doesn't support any regions");
       }
 
-      region = regions.list[2];  // OPEN REGION = 22
+      region = regions.list[reg];  // OPEN REGION = 22
       ret = TMR_paramSet(rp, TMR_PARAM_REGION_ID, &region);
       checkerr(rp, ret, 1, "setting region");
     }
@@ -401,7 +453,7 @@ int main(int argc, char *argv[])
   checkerr(rp, ret, 1, "setting read plan");
 
   while (difftime(time2,time1) < delta && !kbhit()) {
-
+    ret = TMR_read(rp, 500, NULL);
     if (TMR_ERROR_TAG_ID_BUFFER_FULL == ret)
     {
       /* In case of TAG ID Buffer Full, extract the tags present
@@ -586,11 +638,10 @@ int main(int argc, char *argv[])
         }
       }
       #endif
-      // printf ("\n");
       #endif
-      
-      printf("%s : %d - %d - %d - %d - %d - %d - %d - %d\n", idStr, trd.rssi, trd.phase, trd.frequency, readpower, trd.antenna, timeStr, trd.readCount, trd.tag.protocol);
-      if (sqlite3_prepare_v2(db, "INSERT INTO ToP(epc, rssi, phase, freq, pow, ant, ts, read_count, protocol) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL)) {
+      ts = getSeconds(rp, &trd);
+      printf("%s | %d | %d | %d | %d | %d | %d\n", idStr, readpower, trd.rssi, trd.phase, trd.frequency, trd.antenna, ts);
+      if (sqlite3_prepare_v2(db, "INSERT INTO ToP(epc, rssi, phase, freq, pow, ant, ts, read_count, protocol) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);", -1, &stmt, NULL)) {
           printf("Error executing sql statement\n");
           sqlite3_close(db);
           exit(-1);
@@ -601,7 +652,7 @@ int main(int argc, char *argv[])
       sqlite3_bind_int (stmt, 4, trd.frequency);
       sqlite3_bind_int (stmt, 5, readpower);    
       sqlite3_bind_int (stmt, 6, trd.antenna);
-      sqlite3_bind_int (stmt, 7, timeStr);
+      sqlite3_bind_int (stmt, 7, ts);
       sqlite3_bind_int (stmt, 8, trd.readCount);
       sqlite3_bind_int (stmt, 9, trd.tag.protocol); 
       sqlite3_step(stmt);
