@@ -38,6 +38,7 @@
                          "[--pow read_power] : e.g, '-pow 3150'\n"\
                          "[--time reading_time] : e.g, '--time 10 (seconds)'\n"\
                          "[--file file_name] : e.g, '--file database.db'\n"\
+                         "[--tags file_name] : e.g, '--tags tags.txt'\n"\
                          "[--reg region] : e.g, '--reg 1 (Europe) 2 (USA)'\n"\
                          "Example for UHF modules: 'tmr:///com4' or 'tmr:///com4 --ant 1,2' or 'tmr:///com4 --ant 1,2 --pow 2300'\n"\
                          "Example for HF/LF modules: 'tmr:///com4' \n");}
@@ -180,6 +181,75 @@ time_t getSeconds(struct TMR_Reader *rp, const struct TMR_TagReadData *read)
     return seconds;
 }
 
+void getTimeStamp(struct TMR_Reader *rp, const struct TMR_TagReadData *read, char *timeString)
+{
+  char* timeEnd;
+  char* end;
+  char timeStr[128];
+
+  {
+    uint8_t shift;
+    uint64_t timestamp;
+    time_t seconds;
+    int micros;
+
+    shift = 32;
+    timestamp = ((uint64_t)read->timestampHigh<<shift) | read->timestampLow;
+    seconds = timestamp / 1000;
+
+    /*
+     * Timestamp already includes millisecond part of dspMicros,
+     * so subtract this out before adding in dspMicros again
+     */
+    timeEnd = timeStr + (sizeof(timeStr)/sizeof(timeStr[0]));
+    end = timeStr;
+    end += strftime(end, timeEnd-end, "%H:%M:%S", localtime(&seconds));
+  }
+  memcpy(timeString, timeStr, (sizeof(timeStr)/sizeof(timeStr[0])));
+}
+
+int get_lines(char *file)
+{
+    FILE * fp;
+    char *line = NULL;
+    size_t len = 0;
+    ssize_t read;
+    int i = 0;
+    fp = fopen(file, "r");
+    if (fp == NULL)
+        exit(EXIT_FAILURE);
+    while ((read = getline(&line, &len, fp)) != -1) {
+      i++;
+    }
+    fclose(fp);
+    if (line)
+        free(line);
+    return i;
+}
+
+void read_lines(char *file, char lines[][33])
+{
+    FILE * fp;
+    char *line = NULL;
+    size_t len = 0;
+    ssize_t read;
+    int i = 0;
+
+    fp = fopen(file, "r");
+    if (fp == NULL)
+        exit(EXIT_FAILURE);
+
+    while ((read = getline(&line, &len, fp)) != -1) {
+      line[strcspn(line, "\r\n")] = 0;
+      strcpy(lines[i],line);
+      i++;
+    }
+
+    fclose(fp);
+    if (line)
+        free(line);
+}
+
 int main(int argc, char *argv[])
 {
   // set_conio_terminal_mode();
@@ -199,13 +269,18 @@ int main(int argc, char *argv[])
   char string[100];
   TMR_String model;
 
-  time_t time2;
+  time_t time2 = 0;
   time_t time1;
   time ( &time1 );
   double delta = 5;
   int ts = 0;
 
   int reg = 1;
+
+  char *tags = "";
+  int n;
+  size_t NumberOfElements;
+  bool right_prefix = false;
 
   sqlite3 *db;
   sqlite3_stmt *stmt;
@@ -254,6 +329,7 @@ int main(int argc, char *argv[])
       else
       {
         fprintf(stdout, "Can't parse read power: %s\n", argv[i+1]);
+        usage();
       }
     }
     else if (0 == strcmp("--time", argv[i]))
@@ -271,6 +347,7 @@ int main(int argc, char *argv[])
       else
       {
         fprintf(stdout, "Can't parse reading time: %s\n", argv[i+1]);
+        usage();
       }
     }
     else if (0 == strcmp("--reg", argv[i]))
@@ -283,16 +360,26 @@ int main(int argc, char *argv[])
       if (endptr != startptr)
       {
         reg = retval;
-        fprintf(stdout, "Region: %f s\n", delta);
+        if (reg==1){
+          fprintf(stdout, "Region: Europe\n");
+        }
+        else if (reg==2){
+          fprintf(stdout, "Region: USA\n");
+        }
       }
       else
       {
         fprintf(stdout, "Can't parse region: %s\n", argv[i+1]);
+        usage();
       }
+    }
+    else if (0 == strcmp("--tags", argv[i]))
+    {
+      tags = argv[i+1];
+      n = get_lines(tags);
     }
     else if (0 == strcmp("--file", argv[i]))
     {
-      
       database = argv[i+1];
     }
     else
@@ -301,6 +388,8 @@ int main(int argc, char *argv[])
       usage();
     }
   }
+  char pre[n][33];
+  read_lines(tags, pre);
   int rc = sqlite3_open(database, &db);
   if (rc != SQLITE_OK) {
       fprintf(stderr, "Cannot open database: %s\n", sqlite3_errmsg(db));
@@ -482,8 +571,8 @@ int main(int argc, char *argv[])
         TMR_bytesToHex(trd.tag.epc, trd.tag.epcByteCount, idStr);
 
       #ifndef BARE_METAL
-      TMR_getTimeStamp(rp, &trd, timeStr);
-      // printf("Tag ID: %s ", idStr);
+      getTimeStamp(rp, &trd, timeStr);
+      // printf("Tag ID: %s ", timeStr);
 
       // Enable PRINT_TAG_METADATA Flags to print Metadata value
       #if PRINT_TAG_METADATA
@@ -640,23 +729,32 @@ int main(int argc, char *argv[])
       #endif
       #endif
       ts = getSeconds(rp, &trd);
-      printf("%s | %d | %d | %d | %d | %d | %d\n", idStr, readpower, trd.rssi, trd.phase, trd.frequency, trd.antenna, ts);
-      if (sqlite3_prepare_v2(db, "INSERT INTO ToP(epc, rssi, phase, freq, pow, ant, ts, read_count, protocol) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);", -1, &stmt, NULL)) {
-          printf("Error executing sql statement\n");
-          sqlite3_close(db);
-          exit(-1);
+      NumberOfElements = sizeof(pre)/sizeof(*pre);
+      for (i=0;i<NumberOfElements;i++){
+        if (strncmp(pre[i], idStr, strlen(pre[i])) == 0 && pre[i] != NULL){
+          right_prefix = true;
+        }
       }
-      sqlite3_bind_text(stmt, 1, idStr, -1, NULL);
-      sqlite3_bind_int (stmt, 2, trd.rssi);
-      sqlite3_bind_int (stmt, 3, trd.phase);
-      sqlite3_bind_int (stmt, 4, trd.frequency);
-      sqlite3_bind_int (stmt, 5, readpower);    
-      sqlite3_bind_int (stmt, 6, trd.antenna);
-      sqlite3_bind_int (stmt, 7, ts);
-      sqlite3_bind_int (stmt, 8, trd.readCount);
-      sqlite3_bind_int (stmt, 9, trd.tag.protocol); 
-      sqlite3_step(stmt);
-      sqlite3_reset(stmt);
+      if (right_prefix==true){
+        printf("%s | %d | %d | %d | %d | %d | %s\n", idStr, readpower, trd.rssi, trd.phase, trd.frequency, trd.antenna, timeStr);
+        if (sqlite3_prepare_v2(db, "INSERT INTO ToP(epc, rssi, phase, freq, pow, ant, ts, read_count, protocol) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?);", -1, &stmt, NULL)) {
+            printf("Error executing sql statement\n");
+            sqlite3_close(db);
+            exit(-1);
+        }
+        sqlite3_bind_text(stmt, 1, idStr, -1, NULL);
+        sqlite3_bind_int (stmt, 2, trd.rssi);
+        sqlite3_bind_int (stmt, 3, trd.phase);
+        sqlite3_bind_int (stmt, 4, trd.frequency);
+        sqlite3_bind_int (stmt, 5, readpower);    
+        sqlite3_bind_int (stmt, 6, trd.antenna);
+        sqlite3_bind_int (stmt, 7, ts);
+        sqlite3_bind_int (stmt, 8, trd.readCount);
+        sqlite3_bind_int (stmt, 9, trd.tag.protocol); 
+        sqlite3_step(stmt);
+        sqlite3_reset(stmt);
+      }
+      right_prefix=false;
     }
     time ( &time2 );
   }
